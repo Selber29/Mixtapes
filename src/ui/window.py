@@ -1813,6 +1813,41 @@ class MainWindow(Adw.ApplicationWindow):
             )
             sidebar_hdr.set_show_end_title_buttons(False)
 
+    def _on_show_stream_info(self, row):
+        try:
+            info = self.player.get_stream_debug()
+        except Exception as e:
+            info = f"Failed to read stream info: {e}"
+
+        label = Gtk.Label(label=info)
+        label.set_selectable(True)
+        label.set_wrap(True)
+        label.set_xalign(0.0)
+        label.add_css_class("monospace")
+        label.set_margin_top(4)
+
+        dialog = Adw.MessageDialog(
+            transient_for=row.get_root() or self,
+            heading="Stream Info",
+        )
+        dialog.set_extra_child(label)
+        dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+
+        def on_response(dg, response_id):
+            if response_id == "copy":
+                try:
+                    full = self.player.get_stream_debug(full=True)
+                except Exception:
+                    full = info
+                Gdk.Display.get_default().get_clipboard().set(full)
+            dg.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
     def show_preferences(self, action, param):
         prefs = Adw.PreferencesDialog()
 
@@ -1836,6 +1871,20 @@ class MainWindow(Adw.ApplicationWindow):
             lambda switch, param: logger.set_debug_logs(switch.get_active()),
         )
         app_group.add(debug_row)
+
+        # Live stream diagnostics — format/protocol/seek-range of whatever's
+        # currently playing. Handy for "why won't this song seek?".
+        stream_info_row = Adw.ActionRow()
+        stream_info_row.set_title("Stream Info (Debug)")
+        stream_info_row.set_subtitle(
+            "Show format, protocol and seek range of the current stream"
+        )
+        stream_info_row.set_activatable(True)
+        stream_info_row.add_suffix(
+            Gtk.Image.new_from_icon_name("go-next-symbolic")
+        )
+        stream_info_row.connect("activated", self._on_show_stream_info)
+        app_group.add(stream_info_row)
 
         # Force offline mode
         import json as _json
