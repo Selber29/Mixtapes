@@ -3,6 +3,66 @@ import sys
 import threading
 import random
 import os
+import shutil
+import json
+
+
+class _YdlLogger:
+    """Custom yt-dlp logger that mutes the noisy, harmless PO-Token provider
+    chatter. We mint tokens via rustypipe-botguard; the built-in bgutil:http
+    provider is an unused fallback that pings a localhost server nobody runs
+    (`http://127.0.0.1:4416/ping`) and warns on every extraction. Everything
+    else passes through unchanged."""
+
+    _MUTE = (
+        "bgutil",
+        "127.0.0.1:4416",
+        "No request handlers configured",
+    )
+
+    def _muted(self, msg):
+        return any(m in msg for m in self._MUTE)
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        if not self._muted(msg):
+            print(msg)
+
+    def error(self, msg):
+        print(msg)
+
+
+def _find_botguard_bin():
+    """Locate the rustypipe-botguard binary used by the yt-dlp PO-Token
+    provider (yt-dlp-get-pot-rustypipe). The provider searches PATH itself,
+    but desktop launchers / frozen builds often start with a PATH that omits
+    ~/.cargo/bin, so we look in the usual install spots and hand yt-dlp an
+    explicit path. Returns None if it isn't installed — playback still works,
+    only PO-Token-gated formats (e.g. seekable Opus) stay out of reach."""
+    name = "rustypipe-botguard"
+    found = shutil.which(name)
+    if found:
+        return found
+    candidates = [
+        os.path.expanduser("~/.cargo/bin/" + name),
+        "/usr/local/bin/" + name,
+        "/usr/bin/" + name,
+    ]
+    if sys.platform == "win32":
+        exe = name + ".exe"
+        candidates = [
+            os.path.expanduser("~/.cargo/bin/" + exe),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", exe),
+        ]
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GstAudio", "1.0")
@@ -198,11 +258,48 @@ class Player(GObject.Object):
         import atexit
         atexit.register(self._cleanup_all_tmpfs)
 
+        # Videos whose stream can't be seeked (e.g. YouTube only offers a
+        # progressive m4a whose container has no usable seek index, so
+        # qtdemux rejects mid-stream seeks). Once detected, we play them the
+        # same way as upload-locker tracks: download into tmpfs and play the
+        # local file, which *is* seekable. Seeded from disk so a track only
+        # has to fail once, ever.
+        self._noseek_vids = set()
+        self._load_noseek_vids()
+        # Position to apply once a (re)loaded stream finishes prerolling —
+        # set by the seek-fallback so we resume where the user aimed.
+        self._seek_after_load = None
+        # Guards against firing multiple tmpfs downloads for one failed seek.
+        self._seek_fallback_active = False
+
         self.ydl_opts = {
             "js_runtimes": {"node": {}},
-            "format": "bestaudio/best",
+            # Prefer a *progressive HTTPS* audio stream (itag 251 opus / 140
+            # m4a). Those honor byte-Range requests, which is what GStreamer's
+            # souphttpsrc uses to seek. When YouTube gates the progressive
+            # formats (PO-Token / tv-DRM / SABR-only experiments), a plain
+            # "bestaudio" silently falls back to HLS (m3u8_native) or DASH —
+            # GStreamer reports those seekable=True but rejects the actual
+            # seek ("seek rejected by pipeline"). So explicitly avoid m3u8/dash
+            # here, and only fall back to them as a last resort so at least
+            # playback still works. format_sort biases the same way.
+            # Explicitly prefer Opus, then any progressive HTTPS audio.
+            "format": (
+                "bestaudio[acodec=opus]/bestaudio[protocol=https]/"
+                "bestaudio[protocol=http]/bestaudio/best"
+            ),
+            # proto:https keeps us on byte-range-seekable progressive streams;
+            # acodec:opus then prefers WebM/Opus (itag 251) over MP4/AAC (itag
+            # 140). That matters because GStreamer's qtdemux can't reliably
+            # seek YouTube's progressive m4a (no usable mfra/sidx index) while
+            # matroskademux seeks WebM/Opus fine via its Cues. When Opus is
+            # gated behind a PO token, this falls back to m4a so playback
+            # still works — only seeking suffers there.
+            "format_sort": ["proto:https", "acodec:opus"],
             "quiet": True,
             "noplaylist": True,
+            # Mutes the unused bgutil PO-Token provider's localhost-ping warning.
+            "logger": _YdlLogger(),
             "extractor_args": {
                 "youtube": {
                     "player_client": [
@@ -217,6 +314,30 @@ class Player(GObject.Object):
                 }
             },
         }
+
+        # PO-Token provider (yt-dlp-get-pot-rustypipe). When the rustypipe-
+        # botguard binary is present, hand yt-dlp its explicit path so the
+        # provider works even when ~/.cargo/bin isn't on PATH. This unlocks
+        # the GVS-PO-Token-gated formats (notably seekable Opus / itag 251)
+        # that YouTube now requires a token for. Absent the binary, yt-dlp
+        # just skips the provider and we fall back to whatever's ungated.
+        botguard_bin = _find_botguard_bin()
+        if botguard_bin:
+            self.ydl_opts["extractor_args"]["youtubepot-rustypipebotguard"] = {
+                "rustypipe_bg_bin": [botguard_bin],
+            }
+            # Also surface it on PATH for the provider's own discovery / any
+            # snapshot side files it writes next to the binary.
+            bin_dir = os.path.dirname(botguard_bin)
+            if bin_dir and bin_dir not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+            print(f"[POT] rustypipe-botguard found: {botguard_bin}")
+        else:
+            print(
+                "[POT] rustypipe-botguard not found — PO-Token-gated formats "
+                "(e.g. seekable Opus) unavailable. Install from "
+                "https://codeberg.org/ThetaDev/rustypipe-botguard"
+            )
 
         self.bus = self.player.get_bus()
         self.bus.add_signal_watch()
@@ -247,6 +368,12 @@ class Player(GObject.Object):
         self.load_generation = 0  # To handle race conditions in loading
         self.mpris_art_url = None
         self.current_url = None
+        # Diagnostics for the "Stream Info (Debug)" panel. Filled at
+        # resolution time (itag/protocol/ext from yt-dlp) and at source-setup
+        # (the HTTP source element playbin picked); the rest is queried live.
+        self._stream_debug = {}
+        self._source_factory_name = None
+        self._current_play_uri = None
         self.last_seek_time = 0.0
         self.duration = -1
         self._is_loading = False
@@ -1039,6 +1166,8 @@ class Player(GObject.Object):
         # control of the pipeline. Don't let a late stream-start apply
         # the obsolete index.
         self._pending_gapless_index = None
+        # A new track invalidates any parked seek-fallback target.
+        self._seek_after_load = None
         # set_state(NULL) blocks until the pipeline flushes buffers and
         # closes any open HTTP sockets — measured at ~800ms occasionally
         # when the previous track was streaming. Running it on the main
@@ -1112,6 +1241,11 @@ class Player(GObject.Object):
             print(f"[OFFLINE] Playing local file: {local_path}")
             file_uri = GLib.filename_to_uri(os.path.abspath(local_path), None)
             self._used_cached_url = False
+            self._stream_debug = {
+                "source": "local download",
+                "video_id": video_id,
+                "path": local_path,
+            }
             GLib.idle_add(self._start_playback, file_uri)
             return
 
@@ -1151,11 +1285,20 @@ class Player(GObject.Object):
             and vtype_upper != "MUSIC_VIDEO_TYPE_ATV"
         )
 
-        if not is_upload and not will_swap:
+        # Known non-seekable streams go straight to the tmpfs-download path
+        # (handled in _fetch_and_play, same as uploads). Skip the early cache
+        # stream so we don't briefly play the unseekable URL before swapping.
+        is_noseek = video_id in self._noseek_vids
+
+        if not is_upload and not will_swap and not is_noseek:
             cached_url = self.stream_cache.get(video_id)
             if cached_url:
                 print(f"[CACHE] Using cached stream URL for {video_id}")
                 self._used_cached_url = True
+                self._stream_debug = {
+                    "source": "stream (cached URL)",
+                    "video_id": video_id,
+                }
                 GLib.idle_add(self._start_playback, cached_url)
 
         thread = threading.Thread(
@@ -1495,6 +1638,39 @@ class Player(GObject.Object):
         except OSError:
             pass
 
+    def _noseek_vids_path(self):
+        return os.path.join(
+            GLib.get_user_data_dir(), "muse", "noseek_vids.json"
+        )
+
+    def _load_noseek_vids(self):
+        try:
+            path = self._noseek_vids_path()
+            if os.path.exists(path):
+                with open(path) as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._noseek_vids = set(data)
+        except Exception:
+            pass
+
+    def _save_noseek_vids(self):
+        try:
+            path = self._noseek_vids_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                # Cap the file so a long-lived install can't grow it forever.
+                json.dump(list(self._noseek_vids)[-500:], f)
+        except Exception as e:
+            print(f"[PLAYER] failed to persist noseek list: {e}")
+
+    def _mark_noseek(self, video_id):
+        """Remember that `video_id` can't be seeked while streamed, so future
+        plays go straight to the tmpfs-download path."""
+        if video_id and video_id not in self._noseek_vids:
+            self._noseek_vids.add(video_id)
+            self._save_noseek_vids()
+
     def _fetch_and_play(
         self,
         video_id,
@@ -1594,7 +1770,10 @@ class Player(GObject.Object):
         # (/dev/shm — RAM-backed on Linux) and playing from there. The
         # local file is deleted as soon as the user moves to a new track,
         # so nothing accumulates on disk.
-        if track.get("entityId"):
+        # Upload-locker tracks always need this; tracks previously detected as
+        # non-seekable (m4a-only with no usable seek index) get the same
+        # treatment so the user can scrub them.
+        if track.get("entityId") or video_id in self._noseek_vids:
             tmpfs_path = self._download_upload_to_tmpfs(video_id, generation)
             if generation != self.load_generation:
                 # User skipped while we were downloading — _download cleans
@@ -1604,6 +1783,13 @@ class Player(GObject.Object):
                 self._current_tmpfs_path = tmpfs_path
                 file_uri = GLib.filename_to_uri(os.path.abspath(tmpfs_path), None)
                 self._used_cached_url = False
+                self._stream_debug = {
+                    "source": "local tmpfs (non-seekable stream fallback)"
+                    if video_id in self._noseek_vids and not track.get("entityId")
+                    else "local tmpfs (upload)",
+                    "video_id": video_id,
+                    "path": tmpfs_path,
+                }
                 final_title = title_hint or track.get("title") or "Unknown"
                 final_artist = artist_hint or track.get("artist") or "Unknown"
                 final_thumb = thumb_hint or track.get("thumb") or ""
@@ -1655,6 +1841,23 @@ class Player(GObject.Object):
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 stream_url = info["url"]
+
+                # Snapshot the resolved format for the debug panel. This is
+                # the single most useful signal when seeking breaks: an HLS
+                # (m3u8_native) / DASH protocol or a muxed itag means the
+                # stream isn't byte-range seekable even though GStreamer
+                # answers the SEEKING query optimistically.
+                self._stream_debug = {
+                    "source": "stream (yt-dlp)",
+                    "video_id": video_id,
+                    "itag": info.get("format_id"),
+                    "protocol": info.get("protocol"),
+                    "ext": info.get("ext"),
+                    "acodec": info.get("acodec"),
+                    "abr": info.get("abr"),
+                    "container": info.get("container"),
+                    "format_note": info.get("format_note"),
+                }
 
                 # Extract only what we need, then drop the large info dict
                 fetched_title = info.get("title", "Unknown")
@@ -1900,6 +2103,7 @@ class Player(GObject.Object):
             name = source.get_factory().get_name()
         except Exception:
             name = ""
+        self._source_factory_name = name or None
         if name not in ("souphttpsrc", "curlhttpsrc"):
             return
 
@@ -1931,6 +2135,7 @@ class Player(GObject.Object):
             print(f"[PLAYER] source-setup hook error: {e}")
 
     def _start_playback(self, uri, cookie_file=None):
+        self._current_play_uri = uri
         # NULL→URI→PLAYING must happen in order, but set_state(NULL) can
         # block for hundreds of ms while GStreamer flushes the previous
         # stream. Off-load the whole sequence to a worker so the UI
@@ -1967,6 +2172,7 @@ class Player(GObject.Object):
         self.player.set_state(Gst.State.NULL)
         self._is_loading = False
         self._pending_gapless_index = None
+        self._seek_after_load = None
         # Force stopped state immediately
         if self._current_logical_state != "stopped":
             self._current_logical_state = "stopped"
@@ -2126,6 +2332,13 @@ class Player(GObject.Object):
             # The stream is actually loaded and ready
             if hasattr(self, "mpris_events"):
                 self.mpris_events.on_player_all()  # Refresh duration and status
+            # The seek-fallback parked a target here: now that the local file
+            # has prerolled (and is seekable), apply it. Pop first so the
+            # flushing seek's own ASYNC_DONE doesn't re-trigger.
+            if self._seek_after_load is not None:
+                pos = self._seek_after_load
+                self._seek_after_load = None
+                GLib.idle_add(self.seek, pos)
         elif t == Gst.MessageType.ELEMENT:
             # Spectrum analyzer posts magnitude data here on every interval.
             structure = message.get_structure()
@@ -2528,11 +2741,147 @@ class Player(GObject.Object):
                 f"[PLAYER] seek to {position:.1f}s rejected by pipeline "
                 f"(seekable={seekable}, vid={self.current_video_id})"
             )
+            # The stream won't seek (typically a progressive m4a with no
+            # usable seek index). Remember it and recover by downloading the
+            # track into tmpfs and resuming there — local files seek fine.
+            self._begin_seek_fallback(position)
             return False
 
         if hasattr(self, "mpris_events"):
             self.mpris_events.on_seek(int(position * 1_000_000))
         return True
+
+    def _begin_seek_fallback(self, position):
+        """Download the current track to tmpfs and resume at `position` once
+        it's local — recovery for streams GStreamer can't seek. Only runs for
+        network streams (local/tmpfs playback already seeks), once at a time."""
+        vid = self.current_video_id
+        if not vid:
+            return
+        # Already playing from a local file? Then the seek failure isn't about
+        # range support and a re-download won't help — don't loop.
+        if self._current_tmpfs_path:
+            return
+        if self._seek_fallback_active:
+            # A download is already in flight; just update the target so we
+            # land where the user most recently aimed.
+            self._seek_after_load = position
+            return
+
+        self._mark_noseek(vid)
+        self._seek_fallback_active = True
+        self._seek_after_load = position
+        gen = self.load_generation
+        print(f"[PLAYER] seek fallback: downloading {vid} to tmpfs to enable seeking")
+
+        def _worker():
+            try:
+                tmpfs_path = self._download_upload_to_tmpfs(vid, gen)
+                if not tmpfs_path or gen != self.load_generation:
+                    if tmpfs_path:
+                        self._cleanup_tmpfs_path(tmpfs_path)
+                    return
+                GLib.idle_add(self._swap_to_tmpfs, tmpfs_path, vid, gen)
+            finally:
+                self._seek_fallback_active = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _swap_to_tmpfs(self, tmpfs_path, vid, gen):
+        """Main-thread: switch playback from the unseekable stream to the
+        freshly downloaded local file, parking the desired seek for
+        ASYNC_DONE to apply."""
+        if gen != self.load_generation or vid != self.current_video_id:
+            self._cleanup_tmpfs_path(tmpfs_path)
+            return False
+        # Replace any previous tmpfs buffer.
+        if self._current_tmpfs_path and self._current_tmpfs_path != tmpfs_path:
+            self._cleanup_tmpfs_path(self._current_tmpfs_path)
+        self._current_tmpfs_path = tmpfs_path
+        self._stream_debug = {
+            "source": "local tmpfs (non-seekable stream fallback)",
+            "video_id": vid,
+            "path": tmpfs_path,
+        }
+        file_uri = GLib.filename_to_uri(os.path.abspath(tmpfs_path), None)
+        self._start_playback(file_uri)
+        return False
+
+    def get_stream_debug(self, full=False):
+        """Build a human-readable snapshot of the current stream + pipeline
+        for the "Stream Info (Debug)" panel. Everything pipeline-related is
+        queried live at call time; the resolved-format fields come from the
+        last load. The key seeking diagnostic is the SEEKING query's
+        (seekable, start, end): if `end` is below the current position, or
+        the protocol/source isn't byte-range capable, that's why a seek gets
+        rejected even though `seekable=True`."""
+        lines = []
+
+        def _fmt_ns(ns):
+            if ns is None or ns < 0:
+                return "unknown"
+            s = ns / Gst.SECOND
+            return f"{int(s // 60)}:{int(s % 60):02d} ({s:.1f}s)"
+
+        d = self._stream_debug or {}
+        lines.append(f"Track:     {self.current_video_id or '—'}")
+        lines.append(f"Source:    {d.get('source', 'unknown')}")
+        if d.get("itag"):
+            lines.append(
+                f"Format:    itag {d.get('itag')} · {d.get('protocol')} · "
+                f"{d.get('ext')} · {d.get('acodec')} · {d.get('abr')}kbps"
+            )
+        elif d.get("path"):
+            lines.append(f"File:      {d.get('path')}")
+
+        # Source element playbin actually built (souphttpsrc / filesrc / …).
+        lines.append(f"Src elem:  {self._source_factory_name or 'unknown'}")
+
+        uri = self._current_play_uri or ""
+        if uri:
+            # Truncated for the on-screen panel (these signed URLs are ~600
+            # chars); the Copy button passes full=True for the whole thing.
+            shown = uri if (full or len(uri) <= 96) else uri[:96] + "…"
+            lines.append(f"URI:       {shown}")
+
+        # Live pipeline state.
+        try:
+            _, state, _pending = self.player.get_state(0)
+            lines.append(f"State:     {state.value_nick}")
+        except Exception:
+            lines.append("State:     unknown")
+
+        pos_ns = dur_ns = None
+        try:
+            ok_p, pos_ns = self.player.query_position(Gst.Format.TIME)
+            if not ok_p:
+                pos_ns = None
+        except Exception:
+            pos_ns = None
+        try:
+            ok_d, dur_ns = self.player.query_duration(Gst.Format.TIME)
+            if not ok_d:
+                dur_ns = None
+        except Exception:
+            dur_ns = None
+        lines.append(f"Position:  {_fmt_ns(pos_ns)}")
+        lines.append(f"Duration:  {_fmt_ns(dur_ns)}")
+
+        # The decisive seek diagnostic.
+        try:
+            q = Gst.Query.new_seeking(Gst.Format.TIME)
+            if self.player.query(q):
+                _fmt, seekable, seg_start, seg_end = q.parse_seeking()
+                lines.append(f"Seekable:  {bool(seekable)}")
+                lines.append(
+                    f"Seek range: {_fmt_ns(seg_start)}  →  {_fmt_ns(seg_end)}"
+                )
+            else:
+                lines.append("Seekable:  query failed")
+        except Exception as e:
+            lines.append(f"Seekable:  error ({e})")
+
+        return "\n".join(lines)
 
     def get_volume(self):
         """Get volume in cubic (perceptual) scale 0.0-1.0, matching system mixer."""
