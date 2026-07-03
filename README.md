@@ -117,7 +117,11 @@ yay -S mixtapes-git
 
 ### Nix
 
-A Nix flake is available. See [setup instructions](https://github.com/m-obeid/Muse/pull/2#issue-3965386248).
+```
+nix run github:m-obeid/Mixtapes       # run directly from GitHub
+nix run                               # run from local checkout
+nix develop                           # enter dev shell
+```
 
 ### From Source
 
