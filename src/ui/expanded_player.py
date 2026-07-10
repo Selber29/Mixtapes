@@ -199,6 +199,10 @@ class ExpandedPlayer(Gtk.Box):
         a_refresh.connect("activate", self._on_refresh_metadata)
         self.ep_action_group.add_action(a_refresh)
 
+        a_stream_info = Gio.SimpleAction.new("stream_info", None)
+        a_stream_info.connect("activate", self._on_stream_info)
+        self.ep_action_group.add_action(a_stream_info)
+
         meta_row.append(text_box)
         meta_row.append(self.like_btn)
         main_box.append(meta_row)
@@ -696,6 +700,13 @@ class ExpandedPlayer(Gtk.Box):
             clip_section.append("Copy Song Link", "ep.copy_link")
             self.more_menu_model.append_section(None, clip_section)
 
+        # Diagnostics — always available when something is loaded so the
+        # user can inspect why a stream won't seek (format/protocol/range).
+        if vid:
+            debug_section = Gio.Menu()
+            debug_section.append("Stream Info (Debug)", "ep.stream_info")
+            self.more_menu_model.append_section(None, debug_section)
+
     def _on_add_to_playlist(self, action, param):
         self._do_add_to_playlist(param.get_string())
 
@@ -744,6 +755,44 @@ class ExpandedPlayer(Gtk.Box):
                 f"https://music.youtube.com/watch?v={vid}"
             )
             self._show_toast("Link copied")
+
+    def _on_stream_info(self, action, param):
+        try:
+            info = self.player.get_stream_debug()
+        except Exception as e:
+            info = f"Failed to read stream info: {e}"
+
+        # Monospace, selectable body so the user can read the seek range /
+        # protocol at a glance and select-copy individual lines.
+        label = Gtk.Label(label=info)
+        label.set_selectable(True)
+        label.set_wrap(True)
+        label.set_xalign(0.0)
+        label.add_css_class("monospace")
+        label.set_margin_top(4)
+
+        dialog = Adw.MessageDialog(
+            transient_for=self.get_root(),
+            heading="Stream Info",
+        )
+        dialog.set_extra_child(label)
+        dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+
+        def on_response(dg, response_id):
+            if response_id == "copy":
+                try:
+                    full = self.player.get_stream_debug(full=True)
+                except Exception:
+                    full = info
+                Gdk.Display.get_default().get_clipboard().set(full)
+                self._show_toast("Stream info copied")
+            dg.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _on_refresh_metadata(self, action, param):
         vid = self.player.current_video_id

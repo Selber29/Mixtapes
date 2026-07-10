@@ -43,6 +43,7 @@ Source: "{#SourcePath}\windows\MixtapesBridge.exe"; DestDir: "{app}\windows"; Fl
 Source: "{#SourcePath}\windows\MixtapesLogin.exe"; DestDir: "{app}\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\windows\mixtapes.ico"; DestDir: "{app}\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\windows\fonts.conf"; DestDir: "{app}\windows"; Flags: ignoreversion
+Source: "{#SourcePath}\windows\rustypipe-botguard.exe"; DestDir: "{app}\windows"; Flags: ignoreversion
 
 ; Debug launcher
 Source: "{#SourcePath}\mixtapes-debug.bat"; DestDir: "{app}"; Flags: ignoreversion
