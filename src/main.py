@@ -19,18 +19,24 @@ if sys.platform.startswith("linux") and "MALLOC_ARENA_MAX" not in os.environ:
     os.environ["MALLOC_ARENA_MAX"] = "2"
     if os.environ.get("MUSE_NO_ARENA_REEXEC") != "1":
         try:
-            # Compiled builds (Nuitka sets __compiled__; PyInstaller/cx_Freeze
-            # set sys.frozen): the executable is our own binary, not a Python
-            # interpreter. Re-exec the binary directly — /proc/self/exe is the
-            # reliable path even when we were launched via a PATH name or a
-            # symlink (/usr/bin/mixtapes). Crucially, do NOT re-exec
-            # sys.executable here: Nuitka points it at the system Python, which
-            # would then try to run our ELF as a .py and die on its null bytes.
-            if getattr(sys, "frozen", False) or "__compiled__" in globals():
-                _exe = os.path.realpath("/proc/self/exe")
-                os.execv(_exe, [_exe] + sys.argv[1:])
-            else:
+            # Decide how to re-exec by looking at what is ACTUALLY running us,
+            # not at build-system markers (sys.frozen is PyInstaller-only;
+            # Nuitka's __compiled__ isn't reliably visible in globals() across
+            # build modes). /proc/self/exe is the real executable regardless of
+            # how we were launched (PATH name, or a symlink like
+            # /usr/bin/mixtapes):
+            #   • an interpreter (python…): argv[0] is our *script*, so re-exec
+            #     sys.executable (preserves a virtualenv) with the full argv.
+            #   • our own binary (Nuitka/PyInstaller/cx_Freeze): argv[0] is the
+            #     program itself, so re-exec that binary and drop argv[0].
+            # Re-execing sys.executable in the compiled case would be fatal:
+            # Nuitka points it at the system Python, which would try to run our
+            # ELF as a .py and die on "source code cannot contain null bytes".
+            _exe = os.path.realpath("/proc/self/exe")
+            if os.path.basename(_exe).lower().startswith("python"):
                 os.execv(sys.executable, [sys.executable] + sys.argv)
+            else:
+                os.execv(_exe, [_exe] + sys.argv[1:])
         except Exception as _e:
             # Re-exec failed (no exec perms, odd launcher) — carry on. The var
             # is still set for threads spawned later, which helps partially.
