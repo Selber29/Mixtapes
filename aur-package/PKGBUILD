@@ -10,7 +10,7 @@ license=('GPL3')
 # Note: webkitgtk-6.0 must come from the 'extra' repository. The CachyOS build
 # is known to malfunction with Mixtapes - see the install hook below.
 depends=('python' 'python-gobject' 'gtk4' 'libadwaita' 'webkitgtk-6.0' 'nodejs' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugins-ugly' 'yt-dlp' 'yt-dlp-ejs' 'python-requests' 'python-ytmusicapi' 'python-mprisify' 'python-mutagen')
-makedepends=('git' 'clang')
+makedepends=('git' 'clang' 'python-pip')
 optdepends=('ffmpeg: for downloading music')
 provides=("mixtapes")
 conflicts=("mixtapes")
@@ -71,7 +71,19 @@ package() {
   # exact path (/usr/lib/mixtapes/bin) so we don't collide with a standalone
   # rustypipe-botguard package on /usr/bin. The tarball is a single bare file.
   install -Dm755 "$srcdir/rustypipe-botguard" "$pkgdir/usr/lib/mixtapes/bin/rustypipe-botguard"
-  
+
+  # PO-Token provider plugins. Without these yt-dlp mints no PO token and
+  # YouTube 403s the gated (seekable Opus / itag 251) formats. Neither is
+  # cleanly installable from the AUR: the AUR `yt-dlp-get-pot` (the GetPOT
+  # framework) hard-depends on an unsatisfiable virtual `YT-DLP-GET-POT-PROVIDER`
+  # that nothing provides, and `yt-dlp-get-pot-rustypipe` (the glue that drives
+  # our bundled rustypipe-botguard binary) isn't packaged at all. Both are
+  # single pure-Python files whose only runtime dep is yt-dlp (already a
+  # dependency), so install them straight from PyPI, without deps, into the
+  # system site-packages the app's interpreter loads yt-dlp plugins from.
+  pip install --root="$pkgdir" --prefix=/usr --no-deps --break-system-packages \
+    "yt-dlp-get-pot>=0.3.0" "yt-dlp-get-pot-rustypipe>=0.2.0"
+
   # Install desktop file, metainfo and icons
   install -Dm644 com.pocoguy.Muse.desktop "$pkgdir/usr/share/applications/com.pocoguy.Muse.desktop"
   install -Dm644 com.pocoguy.Muse.metainfo.xml "$pkgdir/usr/share/metainfo/com.pocoguy.Muse.metainfo.xml"
