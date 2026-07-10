@@ -81,7 +81,11 @@ package() {
   # single pure-Python files whose only runtime dep is yt-dlp (already a
   # dependency), so install them straight from PyPI, without deps, into the
   # system site-packages the app's interpreter loads yt-dlp plugins from.
-  pip install --root="$pkgdir" --prefix=/usr --no-deps --break-system-packages \
+  # --ignore-installed is essential: `pip install --root` otherwise SKIPS a
+  # package it considers "already satisfied" in whatever interpreter pip runs
+  # under (e.g. a builder with an active venv), leaving $pkgdir without the
+  # plugin files and shipping a package that silently 403s. Force the copy.
+  pip install --root="$pkgdir" --prefix=/usr --no-deps --ignore-installed --break-system-packages \
     "yt-dlp-get-pot>=0.3.0" "yt-dlp-get-pot-rustypipe>=0.2.0"
 
   # Install desktop file, metainfo and icons
