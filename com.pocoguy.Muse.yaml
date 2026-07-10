@@ -39,18 +39,43 @@ modules:
     build-options:
       no-debuginfo: true
     build-commands:
-      - install -Dm755 rustypipe-botguard ${FLATPAK_DEST}/bin/rustypipe-botguard
+      # Prefer a vendored tarball supplied as a local `type: file` source
+      # (see `sources` below). Codeberg's edge bot-mitigation systematically
+      # 503s automated clients (curl/wget/flatpak-builder's downloader) even
+      # while a browser downloads fine, so curl --retry can't win, every
+      # attempt is classified the same and shed. The vendored copy makes the
+      # build independent of Codeberg. 
+      - |
+        set -eu
+        case "$(uname -m)" in
+          x86_64)  triple=x86_64-unknown-linux-gnu;  sha=4f2ec561e8f9fadece7deadc6ce0624fbdedd852222c3eb194c22153b1323129 ;;
+          aarch64) triple=aarch64-unknown-linux-gnu; sha=4d038857374a69aea9be8ded981d93a776dc88d4e254f5c6d292746099abf69a ;;
+          *) echo "rustypipe-botguard: unsupported arch $(uname -m)" >&2; exit 1 ;;
+        esac
+        tarball="rustypipe-botguard-v0.1.2-${triple}.tar.xz"
+        if [ -f "$tarball" ]; then
+          cp "$tarball" bg.tar.xz
+        else
+          url="https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/${tarball}"
+          if command -v curl >/dev/null 2>&1; then
+            curl -fL --retry 6 --retry-delay 5 --connect-timeout 30 -o bg.tar.xz "$url"
+          else
+            wget -t 6 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O bg.tar.xz "$url"
+          fi
+        fi
+        echo "${sha}  bg.tar.xz" | sha256sum -c -
+        tar -xf bg.tar.xz
+        install -Dm755 rustypipe-botguard ${FLATPAK_DEST}/bin/rustypipe-botguard
     sources:
-      - type: archive
-        only-arches: [x86_64]
-        url: https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz
+      # Vendored release binary, extracted into the build dir as
+      # rustypipe-botguard-v0.1.2-<triple>.tar.xz so the build-command above
+      # uses it instead of hitting Codeberg. Add an aarch64 entry (with its
+      # own only-arches) if/when that tarball is vendored too.
+      - type: file
+        only-arches:
+          - x86_64
+        path: vendor/rustypipe-botguard/rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz
         sha256: 4f2ec561e8f9fadece7deadc6ce0624fbdedd852222c3eb194c22153b1323129
-        strip-components: 0
-      - type: archive
-        only-arches: [aarch64]
-        url: https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-aarch64-unknown-linux-gnu.tar.xz
-        sha256: 4d038857374a69aea9be8ded981d93a776dc88d4e254f5c6d292746099abf69a
-        strip-components: 0
 
   - name: python-dependencies
     buildsystem: simple
