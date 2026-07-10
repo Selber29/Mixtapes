@@ -19,10 +19,16 @@ if sys.platform.startswith("linux") and "MALLOC_ARENA_MAX" not in os.environ:
     os.environ["MALLOC_ARENA_MAX"] = "2"
     if os.environ.get("MUSE_NO_ARENA_REEXEC") != "1":
         try:
-            # Frozen builds (Nuitka/PyInstaller): argv[0] is the executable
-            # itself, so don't prepend the interpreter a second time.
-            if getattr(sys, "frozen", False):
-                os.execv(sys.executable, [sys.executable] + sys.argv[1:])
+            # Compiled builds (Nuitka sets __compiled__; PyInstaller/cx_Freeze
+            # set sys.frozen): the executable is our own binary, not a Python
+            # interpreter. Re-exec the binary directly — /proc/self/exe is the
+            # reliable path even when we were launched via a PATH name or a
+            # symlink (/usr/bin/mixtapes). Crucially, do NOT re-exec
+            # sys.executable here: Nuitka points it at the system Python, which
+            # would then try to run our ELF as a .py and die on its null bytes.
+            if getattr(sys, "frozen", False) or "__compiled__" in globals():
+                _exe = os.path.realpath("/proc/self/exe")
+                os.execv(_exe, [_exe] + sys.argv[1:])
             else:
                 os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as _e:

@@ -1,7 +1,7 @@
 PyGObject
 ytmusicapi
-yt-dlp>=2026.6.9
-yt-dlp-ejs
+yt-dlp>=2026.7.4
+yt-dlp-ejs>=0.8.0
 # PO-Token provider — unlocks GVS-token-gated formats (seekable Opus/itag 251).
 # Needs the `rustypipe-botguard.exe` binary. The Windows installer already
 # bundles it (in windows/). For a source checkout, put it on PATH:
