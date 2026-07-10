@@ -39,28 +39,58 @@ class _YdlLogger:
 
 def _find_botguard_bin():
     """Locate the rustypipe-botguard binary used by the yt-dlp PO-Token
-    provider (yt-dlp-get-pot-rustypipe). The provider searches PATH itself,
-    but desktop launchers / frozen builds often start with a PATH that omits
-    ~/.cargo/bin, so we look in the usual install spots and hand yt-dlp an
-    explicit path. Returns None if it isn't installed — playback still works,
-    only PO-Token-gated formats (e.g. seekable Opus) stay out of reach."""
-    name = "rustypipe-botguard"
+    provider (yt-dlp-get-pot-rustypipe). Our packaged builds (Flatpak, AUR,
+    the Windows installer) now ship the binary so users don't have to
+    `cargo install` it, so we check the bundled spots first, then PATH, then
+    the usual manual-install locations. Desktop launchers / frozen builds
+    often start with a PATH that omits ~/.cargo/bin, so we hand yt-dlp an
+    explicit path. Returns None if it isn't found anywhere — playback still
+    works, only PO-Token-gated formats (e.g. seekable Opus) stay out of reach."""
+    win = sys.platform == "win32"
+    name = "rustypipe-botguard.exe" if win else "rustypipe-botguard"
+
+    def _usable(p):
+        return bool(p) and os.path.isfile(p) and os.access(p, os.X_OK)
+
+    # 1) Bundled alongside the app. Look relative to the app root — this file
+    #    lives at <root>/src/player/player.py, so three levels up is <root>
+    #    (Windows installer drops it in <root>/windows) — and, for frozen
+    #    Nuitka builds, relative to the running executable.
+    roots = []
+    try:
+        roots.append(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+    except NameError:
+        pass
+    if getattr(sys, "frozen", False):
+        roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+    for root in roots:
+        for sub in ("", "bin", "windows"):
+            cand = os.path.join(root, sub, name)
+            if _usable(cand):
+                return cand
+
+    # 2) On PATH — covers the Flatpak sandbox (/app/bin) and a manual
+    #    `cargo install rustypipe-botguard` that landed on PATH.
     found = shutil.which(name)
-    if found:
+    if _usable(found):
         return found
-    candidates = [
-        os.path.expanduser("~/.cargo/bin/" + name),
-        "/usr/local/bin/" + name,
-        "/usr/bin/" + name,
-    ]
-    if sys.platform == "win32":
-        exe = name + ".exe"
+
+    # 3) Well-known install locations that are commonly off a launcher's PATH.
+    if win:
         candidates = [
-            os.path.expanduser("~/.cargo/bin/" + exe),
-            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", exe),
+            os.path.expanduser("~/.cargo/bin/" + name),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", name),
+        ]
+    else:
+        candidates = [
+            "/usr/lib/mixtapes/bin/" + name,   # AUR package's private libdir
+            os.path.expanduser("~/.cargo/bin/" + name),
+            "/usr/local/bin/" + name,
+            "/usr/bin/" + name,
         ]
     for c in candidates:
-        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+        if _usable(c):
             return c
     return None
 

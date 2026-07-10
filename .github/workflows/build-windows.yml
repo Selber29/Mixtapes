@@ -124,6 +124,15 @@ jobs:
           # at this so the fc backend knows where Windows keeps fonts.
           cp windows/fonts.conf dist/mixtapes/windows/
 
+          echo "Downloading rustypipe-botguard..."
+          BG_VER=0.1.2
+          BG_ZIP="rustypipe-botguard-v${BG_VER}-x86_64-pc-windows-msvc.zip"
+          BG_SHA="edb9e482ca77e3e4ecd4a2d3270f58c9169f03770db1568b3429cc8cf4c4b279"
+          curl -fsSL -o "$BG_ZIP" "https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v${BG_VER}/${BG_ZIP}"
+          echo "${BG_SHA}  ${BG_ZIP}" | sha256sum -c -
+          python -c "import zipfile; zipfile.ZipFile('${BG_ZIP}').extractall('dist/mixtapes/windows')"
+          ls -l dist/mixtapes/windows/rustypipe-botguard.exe
+
           # Copy runtime binaries
           echo "Copying runtime binaries..."
           mkdir -p dist/mixtapes/runtime

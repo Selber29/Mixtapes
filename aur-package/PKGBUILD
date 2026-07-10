@@ -4,7 +4,7 @@ pkgname=mixtapes-git
 pkgver=2026.26.05.0
 pkgrel=1
 pkgdesc="A modern, Linux-first YouTube Music player"
-arch=('any')
+arch=('x86_64' 'aarch64')
 url="https://github.com/m-obeid/Mixtapes"
 license=('GPL3')
 # Note: webkitgtk-6.0 must come from the 'extra' repository. The CachyOS build
@@ -15,8 +15,13 @@ optdepends=('ffmpeg: for downloading music')
 provides=("mixtapes")
 conflicts=("mixtapes")
 install="${pkgname}.install"
+_botguard_ver=0.1.2
 source=("${pkgname}::git+https://github.com/m-obeid/Mixtapes.git")
+source_x86_64=("rustypipe-botguard-${_botguard_ver}-x86_64.tar.xz::https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v${_botguard_ver}/rustypipe-botguard-v${_botguard_ver}-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("rustypipe-botguard-${_botguard_ver}-aarch64.tar.xz::https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v${_botguard_ver}/rustypipe-botguard-v${_botguard_ver}-aarch64-unknown-linux-gnu.tar.xz")
 sha256sums=('SKIP')
+sha256sums_x86_64=('4f2ec561e8f9fadece7deadc6ce0624fbdedd852222c3eb194c22153b1323129')
+sha256sums_aarch64=('4d038857374a69aea9be8ded981d93a776dc88d4e254f5c6d292746099abf69a')
 
 pkgver() {
   cd "$pkgname"
@@ -61,6 +66,11 @@ package() {
 
   install -d "$pkgdir/usr/lib/mixtapes/src/ui"
   cp src/ui/style.css "$pkgdir/usr/lib/mixtapes/src/ui/"
+
+  # PO-Token provider binary _find_botguard_bin() in player.py probes this
+  # exact path (/usr/lib/mixtapes/bin) so we don't collide with a standalone
+  # rustypipe-botguard package on /usr/bin. The tarball is a single bare file.
+  install -Dm755 "$srcdir/rustypipe-botguard" "$pkgdir/usr/lib/mixtapes/bin/rustypipe-botguard"
   
   # Install desktop file, metainfo and icons
   install -Dm644 com.pocoguy.Muse.desktop "$pkgdir/usr/share/applications/com.pocoguy.Muse.desktop"

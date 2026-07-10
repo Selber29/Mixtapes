@@ -147,6 +147,20 @@ sudo apt install git python3 python3-pip nodejs libgtk-4-dev libadwaita-1-dev li
 
 </details>
 
+> [!NOTE]
+> **PO-Token provider (recommended).** Seekable Opus and other
+> PO-Token-gated formats need the `rustypipe-botguard` binary. The packaged
+> builds (Flatpak, AUR, Windows installer) bundle it automatically, but when
+> running **from source** you must install it yourself and keep it on your
+> `PATH`:
+>
+> ```bash
+> cargo install rustypipe-botguard
+> ```
+>
+> or grab a prebuilt binary from <https://codeberg.org/ThetaDev/rustypipe-botguard>.
+> Without it playback still works; only PO-Token-gated formats are skipped.
+
 #### Option 1: Running from source
 
 ```bash

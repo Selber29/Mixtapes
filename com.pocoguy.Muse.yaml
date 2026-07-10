@@ -34,6 +34,24 @@ modules:
       - cp -ra /usr/lib/sdk/node24/lib ${FLATPAK_DEST}/ || true
     sources: []
 
+  - name: rustypipe-botguard
+    buildsystem: simple
+    build-options:
+      no-debuginfo: true
+    build-commands:
+      - install -Dm755 rustypipe-botguard ${FLATPAK_DEST}/bin/rustypipe-botguard
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz
+        sha256: 4f2ec561e8f9fadece7deadc6ce0624fbdedd852222c3eb194c22153b1323129
+        strip-components: 0
+      - type: archive
+        only-arches: [aarch64]
+        url: https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-aarch64-unknown-linux-gnu.tar.xz
+        sha256: 4d038857374a69aea9be8ded981d93a776dc88d4e254f5c6d292746099abf69a
+        strip-components: 0
+
   - name: python-dependencies
     buildsystem: simple
     build-options:
